@@ -70,9 +70,8 @@ class DPOConfig(TrainingArguments):
 
         dataset_num_proc (`int`, *optional*):
             Number of processes to use for processing the dataset.
-        pad_token (`str`, *optional*):
-            Token used for padding. If `None`, it defaults to `processing_class.pad_token`, or if that is also `None`,
-            it falls back to `processing_class.eos_token`.
+        padding_value (`int`, *optional*):
+            Padding value to use. If `None`, the padding value of the tokenizer is used.
         label_pad_token_id (`int`, *optional*, defaults to `-100`):
             Padding value to use for labels.
         max_prompt_length (`int` or `None`, *optional*, defaults to `512`):
@@ -187,21 +186,38 @@ class DPOConfig(TrainingArguments):
         generate_during_eval (`bool`, *optional*, defaults to `False`):
             Whether to generate and log completions from both the model and the reference model to W&B or Comet during
             evaluation.
-
-        > Deprecated parameters
-
-        padding_value:
-
-            <Deprecated version="0.24.0">
-
-            This parameter is deprecated and will be removed in version 0.25.0. Use `pad_token` (`str`) instead.
-
-            </Deprecated>
     """
 
     _VALID_DICT_FIELDS = TrainingArguments._VALID_DICT_FIELDS + ["model_init_kwargs", "ref_model_init_kwargs"]
 
     # Parameters whose default values are overridden from TrainingArguments
+
+    # In DPOConfig (the dataclass used by DPOTrainer)
+    eval_translation_mode: bool = field(
+        default=False,
+        metadata={"help": "If True, evaluate with MT metrics (NLL + BLEU) on a translation-format dev set."}
+    )
+    eval_src_lang: str = field(
+        default="en",
+        metadata={"help": "Source language key inside the 'translation' field (e.g., 'en')."}
+    )
+    eval_tgt_lang: str = field(
+        default="vi",
+        metadata={"help": "Target language key inside the 'translation' field (e.g., 'vi')."}
+    )
+    eval_max_source_length: int = field(
+        default=512,
+        metadata={"help": "Max source length for MT eval tokenization."}
+    )
+    eval_max_target_length: int = field(
+        default=128,
+        metadata={"help": "Max *new tokens* to generate at eval; also used to truncate labels."}
+    )
+    eval_num_beams: int = field(
+        default=1,
+        metadata={"help": "Number of beams for MT eval generation (1 = greedy)."}
+    )
+
     learning_rate: float = field(
         default=1e-6,
         metadata={"help": "The initial learning rate for AdamW."},
@@ -276,12 +292,9 @@ class DPOConfig(TrainingArguments):
         default=None,
         metadata={"help": "Number of processes to use for processing the dataset."},
     )
-    pad_token: Optional[str] = field(
+    padding_value: Optional[int] = field(
         default=None,
-        metadata={
-            "help": "Token used for padding. If `None`, it defaults to `processing_class.pad_token`, or if that "
-            "is also `None`, it falls back to `processing_class.eos_token`."
-        },
+        metadata={"help": "Padding value to use. If `None`, the padding value of the tokenizer is used."},
     )
     label_pad_token_id: int = field(
         default=-100,
@@ -461,12 +474,6 @@ class DPOConfig(TrainingArguments):
             "help": "Whether to generate and log completions from both the model and the reference model to W&B, MLFLow "
             "or Comet during evaluation."
         },
-    )
-
-    # Deprecated arguments
-    padding_value: Optional[int] = field(
-        default=None,
-        metadata={"help": "Deprecated, use `pad_token` (str) instead."},
     )
 
     def __post_init__(self):
