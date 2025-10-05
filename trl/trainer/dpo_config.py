@@ -217,7 +217,10 @@ class DPOConfig(TrainingArguments):
         default=1,
         metadata={"help": "Number of beams for MT eval generation (1 = greedy)."}
     )
-
+    forced_bos_token: Optional[str] = field(
+        default=None,
+        metadata={"help": "For encoder-decoder models, the language code to use as the `forced_bos_token_id` for generation during eval."}
+    )
     learning_rate: float = field(
         default=1e-6,
         metadata={"help": "The initial learning rate for AdamW."},

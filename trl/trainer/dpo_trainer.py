@@ -38,8 +38,10 @@ from torch import autocast
 from torch.utils.data import DataLoader
 from datasets import Dataset
 from transformers import (
+    AutoConfig,
     DataCollatorWithPadding,
     DataCollatorForSeq2Seq,
+    AutoModelForSeq2SeqLM,
     AutoModelForCausalLM,
     AutoTokenizer,
     BaseImageProcessor,
@@ -286,6 +288,15 @@ class DPOTrainer(Trainer):
         if processing_class is None:
             processing_class = AutoTokenizer.from_pretrained(model_id)
 
+        src_lang = args.eval_src_lang  # "en" or "en_XX" depending on your setup
+        tgt_lang = args.eval_tgt_lang  # "vi" or "vi_VN"
+        
+        # For multilingual models like mBart, set the language codes
+        if hasattr(processing_class, 'src_lang'):
+            processing_class.src_lang = src_lang if "_" in src_lang else f"{src_lang}_XX"
+        if hasattr(processing_class, 'tgt_lang'):
+            processing_class.tgt_lang = tgt_lang if "_" in tgt_lang else f"{tgt_lang}_VN"
+
         if args.padding_value is not None:
             self.padding_value = args.padding_value
         else:
@@ -467,7 +478,10 @@ class DPOTrainer(Trainer):
 
                 # keep a tokenizer reference for eval
                 self.val_tokenizer = processing_class
-                self.column_names = self.eval_dataset.column_names
+                try:
+                    self.column_names = self.eval_dataset.column_names
+                except Exception as e:
+                    self.column_names = []
             else:
                 # Preference-mode eval (unchanged)
                 if isinstance(eval_dataset, dict):
@@ -479,6 +493,36 @@ class DPOTrainer(Trainer):
                     eval_dataset = self._prepare_dataset(eval_dataset, processing_class, args, "eval")
                 self.eval_dataset = eval_dataset
 
+        # Configure encoder-decoder specific settings
+        if self.is_encoder_decoder:
+            # Set decoder_start_token_id for MBart and similar models
+            if model.config.decoder_start_token_id is None:
+                if hasattr(processing_class, 'lang_code_to_id'):
+                    # For training, use a default or let the model decide
+                    # For eval with translation mode, this gets overridden
+                    if getattr(args, 'eval_tgt_lang', None) and args.eval_tgt_lang in processing_class.lang_code_to_id:
+                        model.config.decoder_start_token_id = processing_class.lang_code_to_id[args.eval_tgt_lang]
+                    else:
+                        logger.warning(
+                            "decoder_start_token_id is not set. For MBart models, you should provide "
+                            "eval_tgt_lang (e.g., 'vi_VN') in DPOConfig."
+                        )
+                elif processing_class.eos_token_id is not None:
+                    model.config.decoder_start_token_id = processing_class.eos_token_id
+                    logger.warning(f"Using eos_token_id ({processing_class.eos_token_id}) as decoder_start_token_id")
+            
+            # Do the same for ref_model if it exists
+            if self.ref_model is not None and hasattr(self.ref_model.config, 'decoder_start_token_id'):
+                if self.ref_model.config.decoder_start_token_id is None:
+                    self.ref_model.config.decoder_start_token_id = model.config.decoder_start_token_id    
+        # In __init__, after the decoder_start_token_id setup above
+        if getattr(args, "eval_translation_mode", False) and self.is_encoder_decoder:
+            # Set forced_bos_token_id for generation during eval
+            forced_bos_token_id = (
+                processing_class.lang_code_to_id[args.forced_bos_token] if args.forced_bos_token is not None else None
+            )
+            model.config.forced_bos_token_id = forced_bos_token_id
+        
         super().__init__(
             model=model,
             args=args,
@@ -556,39 +600,43 @@ class DPOTrainer(Trainer):
         if "translation" not in examples:
             raise ValueError("MT eval expects a 'translation' column with dicts of languages, as in run_translation.py.")
 
-        src_lang = self.args.eval_src_lang
-        tgt_lang = self.args.eval_tgt_lang
-        src_texts = [ex[src_lang] for ex in examples["translation"]]
-        tgt_texts = [ex[tgt_lang] for ex in examples["translation"]]
-        if hasattr(self.model.config, "forced_bos_token_id") and self.model.config.forced_bos_token_id is None:
-            self.model.config.forced_bos_token_id = self.processing_class.lang_code_to_id["vi_VN"]
-        # Use the same tokenizer as training unless you want a different one for eval.
-        tok = self.processing_class if isinstance(self.processing_class, AutoTokenizer.__mro__[0]) else self.tokenizer
-        tok = tok or AutoTokenizer.from_pretrained(self.model.config._name_or_path)
-
-        # Build the prompt (you may want to keep your training chat template here)
-        prompts = src_texts  # If you used a template during training, apply it here.
-
-        model_inputs = tok(prompts, max_length=self.args.eval_max_source_length, truncation=True)
-        with tok.as_target_tokenizer():
-            labels = tok(tgt_texts, max_length=self.args.eval_max_target_length, truncation=True)
-
-        input_ids = []
-        attention_mask = []
-        final_labels = []
-
-        for src_ids, src_attn, tgt_ids in zip(model_inputs["input_ids"], model_inputs["attention_mask"], labels["input_ids"]):
-            # Concatenate prompt + target for decoder-only
-            merged = src_ids + tgt_ids
-            # Mask the prompt tokens in labels
-            masked = [-100] * len(src_ids) + tgt_ids
-
-            input_ids.append(merged)
-            # Build attention mask for the merged sequence
-            attention_mask.append([1] * len(merged))
-            final_labels.append(masked)
-
-        return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": final_labels}
+        src_lang = self.args.eval_src_lang  # "en" or "en_XX" depending on your setup
+        tgt_lang = self.args.eval_tgt_lang  # "vi" or "vi_VN"
+        
+        # Extract source and target texts
+        src_texts = [ex[src_lang.split("_")[0]] for ex in examples["translation"]]  # Use "en" from "en_XX"
+        tgt_texts = [ex[tgt_lang.split("_")[0]] for ex in examples["translation"]]  # Use "vi" from "vi_VN"
+        
+        # Get the tokenizer
+        tok = self.processing_class
+        
+        # Tokenize source texts (encoder input)
+        model_inputs = tok(
+            src_texts, 
+            max_length=self.args.eval_max_source_length,
+            truncation=True,
+            padding=False,  # We'll pad in the collator
+            return_tensors=None
+        )
+        
+        # Tokenize target texts (decoder labels)
+        # For mBart, use text_target parameter to ensure proper target tokenization
+        # with tok.as_target_tokenizer() if hasattr(tok, 'as_target_tokenizer') else nullcontext():
+        labels = tok(
+            # tgt_texts if not hasattr(tok, 'as_target_tokenizer') else tgt_texts,
+            # text_target=tgt_texts if hasattr(tok, 'as_target_tokenizer') else None,
+            text_target=tgt_texts,
+            max_length=self.args.eval_max_target_length,
+            truncation=True,
+            padding=False,  # We'll pad in the collator
+            return_tensors=None
+        )
+        
+        # For encoder-decoder models, input_ids are the source tokens
+        # and labels are the target tokens
+        model_inputs["labels"] = labels["input_ids"]
+        
+        return model_inputs
 
     def _create_model_from_path(self, model_path: str, args: DPOConfig, is_ref: bool = False) -> PreTrainedModel:
         """Creates a model from a path or model identifier."""
@@ -611,7 +659,16 @@ class DPOTrainer(Trainer):
             )
 
         # Create model
-        model = AutoModelForCausalLM.from_pretrained(model_path, **model_init_kwargs)
+        # Load config to check architecture
+
+        config = AutoConfig.from_pretrained(model_path, **{k: v for k, v in model_init_kwargs.items() if k != 'dtype'})
+        
+        # Use appropriate model class based on architecture
+        if config.is_encoder_decoder:
+            model = AutoModelForSeq2SeqLM.from_pretrained(model_path, **model_init_kwargs)
+        else:
+            model = AutoModelForCausalLM.from_pretrained(model_path, **model_init_kwargs)
+        
         return model
 
     def _prepare_peft_model(
@@ -979,12 +1036,15 @@ class DPOTrainer(Trainer):
             return super().get_eval_dataloader(eval_dataset=eval_dataset)
         # MT eval mode
         else:
+            if eval_dataset is None:
+                eval_dataset = self.eval_dataset
+
             tokenized = eval_dataset.map(
             self._mt_eval_preprocess_batch,
             batched=True,
             remove_columns=eval_dataset.column_names,
             desc="Tokenizing translation dev set for MT eval",
-        )
+            )
 
         # Standard padding collator for (input_ids, attention_mask, labels)
         # pad_collator = DataCollatorWithPadding(
@@ -2017,7 +2077,7 @@ class DPOTrainer(Trainer):
 
             # Return token IDs; your compute_metrics can decode with the tokenizer
             # Optionally, you can strip the prompt part before returning (depends on your compute_metrics).
-            return loss, generated, inputs.get("labels", None)
+            # return loss, generated, inputs.get("labels", None)
         else:
             if ignore_keys is None:
                 if hasattr(model, "config"):
