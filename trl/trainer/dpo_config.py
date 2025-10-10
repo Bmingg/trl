@@ -197,6 +197,10 @@ class DPOConfig(TrainingArguments):
         default=False,
         metadata={"help": "If True, evaluate with MT metrics (NLL + BLEU) on a translation-format dev set."}
     )
+    eval_prompt_template: Optional[str] = field(
+        default="Translate this medical sentence {src_lang} to {tgt_lang}: {src_text}\nTranslation: ",
+        metadata={"help": "Prompt template for decoder-only MT eval. Use {src_lang}, {tgt_lang}, {src_text} as placeholders."}
+    )
     eval_src_lang: str = field(
         default="en",
         metadata={"help": "Source language key inside the 'translation' field (e.g., 'en')."}
