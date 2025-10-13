@@ -14,7 +14,8 @@
 
 from typing import TYPE_CHECKING
 
-from ..import_utils import OptionalDependencyNotAvailable, _LazyModule, is_diffusers_available
+# from ..import_utils import OptionalDependencyNotAvailable, _LazyModule, is_diffusers_available
+from ..import_utils import _LazyModule
 
 
 _import_structure = {
@@ -81,13 +82,13 @@ _import_structure = {
     "xpo_config": ["XPOConfig"],
     "xpo_trainer": ["XPOTrainer"],
 }
-try:
-    if not is_diffusers_available():
-        raise OptionalDependencyNotAvailable()
-except OptionalDependencyNotAvailable:
-    pass
-else:
-    _import_structure["ddpo_trainer"] = ["DDPOTrainer"]
+# try:
+#     if not is_diffusers_available():
+#         raise OptionalDependencyNotAvailable()
+# except OptionalDependencyNotAvailable:
+#     pass
+# else:
+#     _import_structure["ddpo_trainer"] = ["DDPOTrainer"]
 
 if TYPE_CHECKING:
     from .alignprop_config import AlignPropConfig
@@ -152,14 +153,15 @@ if TYPE_CHECKING:
     from .xpo_config import XPOConfig
     from .xpo_trainer import XPOTrainer
 
-    try:
-        if not is_diffusers_available():
-            raise OptionalDependencyNotAvailable()
-    except OptionalDependencyNotAvailable:
-        pass
-    else:
-        from .ddpo_trainer import DDPOTrainer
+    # try:
+    #     if not is_diffusers_available():
+    #         raise OptionalDependencyNotAvailable()
+    # except OptionalDependencyNotAvailable:
+    #     pass
+    # else:
+    #     from .ddpo_trainer import DDPOTrainer
 else:
     import sys
 
-    sys.modules[__name__] = _LazyModule(__name__, globals()["__file__"], _import_structure, module_spec=__spec__)
+    sys.modules[__name__] = _LazyModule(
+        __name__, globals()["__file__"], _import_structure, module_spec=__spec__)
